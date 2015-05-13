@@ -1,0 +1,526 @@
+<?php
+/**
+ * @file
+ * Module file for user_notifications.
+ */
+
+/**
+ * Implements hook_init().
+ */
+function user_notifications_init() {
+  $path = drupal_get_path('module', 'user_notifications');
+//  drupal_add_js($path .'/user_notifications.js');
+  drupal_add_js('misc/jquery.form.js');
+  drupal_add_library('system', 'drupal.ajax');
+  $current_time = time();
+  setcookie('server_time', $current_time, time()+86400);
+
+}
+
+/*
+ * Implements hook_flag_default_flags().
+ *
+ * @return array
+ */
+function user_notifications_flag_default_flags() {
+  $flags = array();
+  // Exported flag: "user_notifications_read".
+  $flags['user_notifications_read'] = array(
+    'entity_type' => 'comment',
+    'title' => 'user_notifications_read',
+    'global' => 0,
+    'types' => array(),
+    'flag_short' => 'read',
+    'flag_long' => '',
+    'flag_message' => 'Mark as read',
+    'unflag_short' => 'unread',
+    'unflag_long' => '',
+    'unflag_message' => '',
+    'unflag_denied_text' => '',
+    'link_type' => 'toggle',
+    'weight' => 0,
+    'show_in_links' => array(
+      'full' => 'full',
+      'diff_standard' => 0,
+      'token' => 0,
+    ),
+    'show_as_field' => 0,
+    'show_on_form' => 0,
+    'access_author' => '',
+    'show_contextual_link' => FALSE,
+    'api_version' => 3,
+  );
+  // Exported flag: "user_notifications_notify".
+  $flags['user_notifications_notify'] = array(
+    'entity_type' => 'user',
+    'title' => 'user_notifications_notify',
+    'global' => 0,
+    'types' => array(),
+    'flag_short' => 'User notify',
+    'flag_long' => '',
+    'flag_message' => '',
+    'unflag_short' => 'Unflag this item',
+    'unflag_long' => '',
+    'unflag_message' => '',
+    'unflag_denied_text' => '',
+    'link_type' => 'toggle',
+    'weight' => 0,
+    'show_in_links' => array(
+      'full' => 'full',
+      'diff_standard' => 0,
+      'token' => 0,
+    ),
+    'show_as_field' => 0,
+    'show_on_form' => 0,
+    'access_author' => '',
+    'show_contextual_link' => FALSE,
+    'show_on_profile' => 0,
+    'access_uid' => '',
+    'api_version' => 3,
+  );
+  return $flags;
+}
+
+
+/**
+ * Queries nodes by nid, on which the current user has commented.
+ *
+ * @return string
+ *    returns the nids field (int) of the node table.
+ *
+ */
+function _get_user_notifications_nid_list() {
+  global $user;
+
+  // Get node id's in which logged in user has commented.
+  $result = db_query(
+    'SELECT
+      c.nid AS nid,
+      c.created AS created
+    FROM {comment} c
+    WHERE c.status = 1 AND c.uid = :uid GROUP BY c.nid', array(':uid' => $user->uid))->fetchAll();
+
+  return $result;
+}
+
+/**
+ * Queries comments on nodes where the logged in user has commented.
+ *
+ * @return object
+ *    returns an standard object with following fields from the following tables:
+ *    -comment: cid, subject, created, changed
+ *    -field_data_filed_display_name: display_name
+ *    -users: name, uid, picture
+ *    -node: nid
+ */
+function _get_user_notifications() {
+  global $user;
+
+    $result = db_query(
+      'SELECT
+        c.cid AS cid,
+        c.subject AS subject,
+        c.created AS created,
+        c.changed AS changed,
+        f.field_display_name_value AS display_name,
+        u.name AS name,
+        u.uid AS uid,
+        u.picture AS picture,
+        n.nid AS nid,
+        n.title AS title
+      FROM {comment} c
+        INNER JOIN field_data_field_display_name AS f ON f.entity_id = c.uid
+        INNER JOIN users AS u ON u.uid = c.uid
+        INNER JOIN node AS n ON n.nid = c.nid
+      WHERE c.status = 1
+        AND c.uid <> :uid
+        AND c.nid IN(
+          SELECT cn.nid AS nid
+          FROM {comment} cn
+          WHERE cn.status = 1 AND cn.uid = :uid GROUP BY cn.nid)
+        ORDER BY c.created DESC', array(':uid' => $user->uid));
+
+  return $result;
+}
+
+/**
+ * Check the status of the current user's notification flag.
+ * If no flag exists for the current user create it.
+ *
+ * @return mixed
+ *    Return the timestamp for the user notification flagging.
+ */
+function _get_notification_flag_status() {
+  global $user;
+
+  // load notification flag.
+
+  $flag = flag_get_flag('user_notifications_notify');
+
+  // Get current user's notification flag if it exists.
+  if ($flag && $flag->is_flagged($user->uid)) {
+    $user_flag_results = flag_get_user_flags('user', $user->uid, null, null, false);
+
+    // Get timestamp of existing notification flagging.
+    foreach($user_flag_results as $user_flag) {
+      $flag_timestamp = $user_flag->timestamp;
+    }
+  } else {
+    // Create notification flag for the current user.
+    $flag->flag('flag', 'user_notifications_notify', $user->uid);
+    $user_flag_results = flag_get_user_flags('user', $user->uid, null, null, false);
+
+    // Get timestamp of new notification flag.
+    foreach($user_flag_results as $user_flag) {
+      $flag_timestamp = $user_flag->timestamp;
+    }
+  }
+  return $flag_timestamp;
+}
+
+/**
+ * Query - Get count of comments newer than last timestamp.
+ *
+ * @return mixed
+ */
+function _get_new_notification_count() {
+  global $user;
+  // Get current users notifications flag status.
+  $flag_timestamp = _get_notification_flag_status();
+
+  // Get all comments on nodes in which the logged user commented which are newer than the
+  // flag_timestamp.
+  $result = db_query(
+    'SELECT COUNT(c.cid) AS cid
+    FROM {comment} c
+    WHERE c.status = 1 
+      AND c.uid <> :uid 
+      AND c.nid IN(
+        SELECT
+          n.nid AS nid
+        FROM {node} n
+          INNER JOIN {comment} c ON n.nid = c.nid
+        WHERE c.status = 1 AND c.uid = :uid GROUP BY n.nid)
+      AND c.created > :flag_timestamp
+      AND c.changed > :flag_timestamp', array(
+      ':uid' => $user->uid,
+      ':flag_timestamp' => $flag_timestamp))->fetchField();
+
+  return $result;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function user_notifications_menu() {
+  // Returns AJAX commands if the user has JavaScript turned on
+  $items = array();
+  $items['user_notifications/notify/%'] = array(
+    'title' => 'Update notifications count',
+    'page callback' => 'update_user_flag',
+    'page arguments' => array(2),
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+    'file' => 'user_notifications_update_flag.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['comment/%/read'] = array(
+    'page callback' => 'user_notifications_read',
+    'page arguments' => array(1),
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+    'file' => 'user_notifications_read.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['user_notifications/poll/%'] = array(
+    'page callback' => 'user_notifications_poll',
+    'page arguments' => array(2),
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+//    'delivery callback' => 'ajax_deliver',
+    'file' => 'user_notifications_poll.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Query - Get read/unread status of comments.
+ *
+ * @param $cid
+ * @return int
+ */
+function check_read_status($cid) {
+  global $user;
+  $cid_int = intval($cid);
+  $query = db_query(
+    'SELECT
+      COUNT(fl.fid)
+    FROM {flagging} fl
+    WHERE
+      fl.fid = 2
+      AND fl.uid = :uid
+      AND fl.entity_id = :cid', array(
+        ':uid' => $user->uid,
+        ':cid' => $cid_int,
+        ))->fetchField();
+  if ($query > 0) {
+    $result = 1;
+  } else {
+    $result = 0;
+  }
+  return $result;
+}
+
+
+/**
+ * Implements hook_image_default_styles().
+ */
+function user_notifications_image_default_styles() {
+  $styles = array();
+  $styles['square_avatar'] = array(
+    'effects' => array(
+      array(
+        'name' => 'image_scale_and_crop',
+        'data' => array('width' => 60, 'height' => 60),
+        'weight' => 0,
+      ),
+    )
+  );
+  return $styles;
+}
+
+
+function user_notifications_content() {
+  // Get unread comments
+  $result = _get_user_notifications();
+  // Get list of nid's on which the current user has commented.
+  $nid_list = _get_user_notifications_nid_list();
+  // Place query results into renderable array.
+  $items = array();
+  foreach ($result as $record) {
+      foreach ($nid_list as $key => $val) {
+        if (($record->nid == $val->nid) and ($record->created > $val->created)) {
+          $items[] = array(
+            'data' => array(
+              '#theme' => 'user_notifications_block_item',
+              '#record' => $record,
+            ),
+          );
+        }
+      }
+  }
+
+  // Get new notifications count.
+  $notify_count = _get_new_notification_count();
+  $path_to_images = '/' . drupal_get_path('module', 'user_notifications') . '/images/';
+
+  // Test for comments
+  if (!empty($items) && ($notify_count > 0)) {
+
+    // Insert flag icon light -indicating new comments
+    $content = array(
+      'notify_icon' => array(
+        '#type' => 'markup',
+        '#markup' => '<li class="notify-icon"><img src="' . $path_to_images . 'flag-light.png" alt="New notifications" ></li>',
+      ),
+      // Add number of new comments badge
+      'notification_count' => array(
+        '#type' => 'markup',
+        '#markup' => '<li class="notify-count">' . $notify_count . '</li>',
+      ),
+      // Theme content title
+      'title' => array(
+        '#type' => 'markup',
+        '#markup' => '<ul class="notify-list"><li class="block-title"><h3>Notifications</h3></li>',
+      ),
+      // Theme notification items in list for pre-render
+      'list' => array(
+        '#theme' => 'item_list__user_notifications',
+        '#items' => $items,
+        '#pre_render' => array(
+          'user_notifications_item_list_child_render'
+        ),
+      )
+    );
+  } else {
+
+    // Insert flag icon dark - indicating no new comments
+    $content = array(
+      'notify_icon' => array(
+        '#type' => 'markup',
+        '#markup' => '<li class="notify-icon"><img src="' . $path_to_images . 'flag-dark.png" class="img-swap" alt="No new notifications" ></li>',
+      ),
+      // Theme content title.
+      'title' => array(
+        '#type' => 'markup',
+        '#markup' => '<ul class="notify-list"><li class="block-title"><h3>Notifications</h3></li>',
+      ),
+      // Theme notification items in list for pre-render
+      'list' => array(
+        '#theme' => 'item_list__user_notifications',
+        '#items' => $items,
+        '#pre_render' => array(
+          'user_notifications_item_list_child_render'
+        ),
+      )
+    );
+  }
+  return $content;
+}
+
+/**
+ * Implements hook_block_info().
+ *
+ */
+function user_notifications_block_info() {
+  $blocks = array();
+  $blocks['notifications'] = array(
+    // info: The name of the block.
+    'info' => t('User notifications: dropdown'),
+    'status' => TRUE,
+    'weight' => 0,
+    'visibility' => 1,
+    // Block caching options (per role, per user, etc.)
+//    'cache' => DRUPAL_CACHE_PER_USER, // default
+  );
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * @param  $delta The name of the requested block.
+ * @return array
+ */
+function user_notifications_block_view($delta = '') {
+  // Create blank array
+  $block = array(
+    'subject' => '',
+    'content' => '',
+    );
+
+  // Check if block is being requested.
+  switch ($delta) {
+    case 'notifications':
+    // Set block title.
+    $block['subject'] = t('Notifications');
+    $block['content'] = user_notifications_content();
+    return $block;
+  }
+}
+
+/**
+ * Render the child element of the theme_item_list() before its data is themed.
+ * template_prefixpreprocess function, defining
+ */
+function user_notifications_item_list_child_render($elements) {
+  foreach(array_keys($elements['#items']) as $key) {
+    // Take the renderable array in user_notifications_block_view()
+    // and render it into the string that theme_item_list() expects.
+    if (is_array($elements['#items'][$key]['data'])) {
+      $elements['#items'][$key]['data'] = drupal_render($elements['#items'][$key]['data']);
+    }
+  }
+  return $elements;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function user_notifications_theme($existing, $type, $theme, $path) {
+  return array(
+    'user_notifications_block_item' => array(
+      'variables' => array(
+        'record' => NULL,
+      ),
+      'template' => 'user-notifications-block-item',
+    ),
+  );
+}
+
+/**
+ * Preprocesses user notifications items variables.
+ */
+function template_preprocess_user_notifications_block_item(&$variables) {
+  $record = $variables['record'];
+
+  // Check read status
+  $read_test = check_read_status($record->cid);
+  if ($read_test == 1) {
+  $variables['read_status'] = array(
+      '#type' => 'markup',
+      '#markup' => ''
+    );
+  } else {
+    $variables['read_status'] = array(
+      '#type' => 'markup',
+      '#markup' => 'notify-unread'
+    );
+  }
+
+  // Create a renderable array for the author photo.
+  if ($record->picture > 0) {
+    $image = file_load($record->picture);
+    $variables['avatar'] = theme_image(
+      array(
+        'style_name' => 'square_avatar',
+        'path' => $image->uri,
+        'width' => '60px',
+        'height' => '60px',
+        'alt' => 'author photo',
+        'attributes' => array('class' => array('notify-image')),
+      )
+    );
+  } else {
+//    $image = file_load(0);
+    $variables['avatar'] = theme_image(
+      array(
+        'style_name' => 'square_avatar',
+        'path' => '/sites/default/files/user-default.jpg',
+        'width' => '60px',
+        'height' => '60px',
+        'alt' => 'author photo',
+        'attributes' => array('class' => array('notify-image')),
+      )
+    );
+  }
+
+  // Create renderable array for the comment_author.
+  $variables['comment_author'] = array(
+    '#type' => 'markup',
+    '#markup' => $record->display_name,
+  );
+
+  // Create a renderable array for the node title
+  $variables['title'] = array(
+    '#type' => 'link',
+    '#title' => $record->title,
+    '#href' => 'node/' . $record->nid,
+    '#attributes' => array(
+      'comment_id' => $record->cid,
+      ),
+    );
+
+  // Comment body teaser
+  $variables['teaser'] = array(
+    '#type' => 'markup',
+    '#markup' => $record->subject,
+  );
+
+  // Format the creation date of the comment
+  $variables['created'] = $record->created;
+
+  // Format date based on duration and units
+  $variables['date'] = format_interval((time() - $record->created) , 2) . t(' ago');
+
+//  // Comment number
+//  $variables['comment_num'] = array(
+//    '#type' => 'markup',
+//    '#markup' => $record->cid,
+//  );
+}

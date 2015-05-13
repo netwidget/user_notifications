@@ -1,0 +1,13 @@
+name = User notifications
+core = 7.x
+package = Block
+php = 5.2.4
+version = 7.x-1.x-dev
+project = user_notifications
+dependencies[] = flag
+scripts[] = user_notifications.js
+;scripts[] = user_notifications_poll.js
+files[] = user_notifications.module
+files[] = user-notifications-block-item.tpl.php
+files[] = user_notifications_update_flag.inc
+files[] = user_notifications_read.inc

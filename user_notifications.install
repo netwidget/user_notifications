@@ -1,0 +1,54 @@
+<?php
+
+function user_notifications_install() {
+  $ret = array();
+  $flag_notify = flag_flag::factory_by_entity_type('users');
+  // Unique, machine-readable name.
+  $flag->name = 'user_notifications_notify';
+  $values = array(
+    'flag_short' => 'read',
+    'flag_long' => '',
+    'flag_message' => '',
+    'flag_confirmation' => '',
+    'unflag_short' => 'unread',
+    'unflag_long' => '',
+    'unflag_message' => '',
+    'unflag_confirmation' => '',
+    'link_type' => 'normal',
+    'show_on_profile' => 1,
+    'global' => 1,
+    // A user flag doesn't support node types.
+    'types' => array(),
+    'title' => 'User notify',
+  );
+  $flag_notify->form_input($values);
+  $flag_notify->save();
+  $flag_notify->enable();
+  $ret[] = array('success' => !empty($flag_notify->fid), 'query' => 'Created user flag ' . $flag_notify->name);
+
+  // Create user_notifications_read flag.
+  $flag_read = flag_flag::factory_by_entity_type('comments');
+  // Unique, machine-readable name.
+  $flag->name = 'user_notifications_read';
+  $values = array(
+    'flag_short' => 'read',
+    'flag_long' => '',
+    'flag_message' => 'Marked as read.',
+    'flag_confirmation' => '',
+    'unflag_short' => 'unread',
+    'unflag_long' => 'Mark this comment as unread',
+    'unflag_message' => 'Marked as unread',
+    'unflag_confirmation' => '',
+    'link_type' => 'normal',
+    'show_on_profile' => 1,
+    'global' => 1,
+    // A user flag doesn't support node types.
+    'types' => array(),
+    'title' => 'Mark comments read',
+  );
+  $flag_read->form_input($values);
+  $flag_read->save();
+  $flag_read->enable();
+  $ret[] = array('success' => !empty($flag_read->fid), 'query' => 'Created user flag ' . $flag_read->name);
+  return $ret;
+}
